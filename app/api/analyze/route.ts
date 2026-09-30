@@ -2,6 +2,7 @@ import { ConverseCommand } from "@aws-sdk/client-bedrock-runtime";
 import { PutItemCommand } from "@aws-sdk/client-dynamodb";
 import { PutObjectCommand } from "@aws-sdk/client-s3";
 import { marshall } from "@aws-sdk/util-dynamodb";
+import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import pdfParse from "pdf-parse";
 import { bedrockClient, dynamoClient, s3Client } from "@/lib/aws";
@@ -53,15 +54,19 @@ function normalizeResult(value: unknown): AnalysisResult {
 }
 
 function parseJsonResponse(text: string): unknown {
-  const cleaned = text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
+  const fencedMatch = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+  const cleaned = (fencedMatch?.[1] ?? text).trim();
   try {
     return JSON.parse(cleaned);
   } catch {
-    const objectStart = cleaned.indexOf("{");
-    const objectEnd = cleaned.lastIndexOf("}");
-    if (objectStart >= 0 && objectEnd > objectStart) return JSON.parse(cleaned.slice(objectStart, objectEnd + 1));
+    const objectMatch = cleaned.match(/\{[\s\S]*\}/);
+    if (objectMatch?.[0]) return JSON.parse(objectMatch[0]);
     throw new Error("Bedrock returned malformed JSON.");
   }
+}
+
+function jsonError(message: string, status: number) {
+  return NextResponse.json({ error: message }, { status });
 }
 
 export async function POST(request: NextRequest) {
@@ -73,35 +78,44 @@ export async function POST(request: NextRequest) {
     const rawContractText = typeof rawContractValue === "string" ? rawContractValue.trim() : "";
     const clientRequest = typeof clientRequestValue === "string" ? clientRequestValue.trim() : "";
 
-    if (!clientRequest) return NextResponse.json({ error: "Client request is required." }, { status: 400 });
-    if (clientRequest.length > MAX_REQUEST_CHARS) return NextResponse.json({ error: "Client request is too long." }, { status: 400 });
+    if (!clientRequest) return jsonError("Client request is required.", 400);
+    if (clientRequest.length > MAX_REQUEST_CHARS) return jsonError("Client request is too long.", 400);
 
     let extractedContractText = rawContractText;
     let uploadedKey: string | undefined;
     let uploadedBuffer: Buffer | undefined;
 
     if (file instanceof File && file.size > 0) {
-      if (file.size > MAX_FILE_SIZE) return NextResponse.json({ error: "PDF must be smaller than 10 MB." }, { status: 400 });
+      if (file.size > MAX_FILE_SIZE) return jsonError("PDF must be smaller than 10 MB.", 400);
       if (file.type !== "application/pdf" && !file.name.toLowerCase().endsWith(".pdf")) {
-        return NextResponse.json({ error: "Only PDF contracts are supported." }, { status: 400 });
+        return jsonError("Only PDF contracts are supported.", 400);
       }
 
       const buffer = Buffer.from(await file.arrayBuffer());
+      uploadedBuffer = buffer;
+      uploadedKey = `contracts/${Date.now()}-${file.name.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
+
       let pdfData;
       try {
         pdfData = await pdfParse(buffer);
-      } catch {
-        return NextResponse.json({ error: "The uploaded file is not a readable PDF." }, { status: 400 });
+      } catch (pdfError) {
+        console.warn("PDF extraction failed, falling back to pasted contract text when available.", pdfError);
+        pdfData = { text: "" };
       }
 
-      extractedContractText = pdfData.text.trim();
-      uploadedBuffer = buffer;
-      uploadedKey = `contracts/${Date.now()}-${file.name.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
+      extractedContractText = (pdfData.text || "").trim();
+      if (!extractedContractText && rawContractText) {
+        extractedContractText = rawContractText;
+      }
+
+      if (!extractedContractText) {
+        return jsonError("Unable to extract contract text from the uploaded PDF. Paste the text or upload a readable PDF.", 400);
+      }
     }
 
-    if (!extractedContractText) return NextResponse.json({ error: "No contract text or PDF provided." }, { status: 400 });
+    if (!extractedContractText) return jsonError("No contract text or PDF provided.", 400);
     if (extractedContractText.length > MAX_CONTRACT_CHARS) {
-      return NextResponse.json({ error: "Contract text is too long." }, { status: 400 });
+      return jsonError("Contract text is too long.", 400);
     }
 
     if (uploadedKey && uploadedBuffer) {
@@ -126,11 +140,12 @@ export async function POST(request: NextRequest) {
     const responseText = response.output?.message?.content?.find((item) => item.text)?.text;
     if (!responseText) throw new Error("Bedrock returned an empty response.");
     const result = normalizeResult(parseJsonResponse(responseText));
+    const logId = `LOG-${Date.now()}-${randomUUID()}`;
 
     await dynamoClient.send(new PutItemCommand({
       TableName: process.env.DYNAMODB_TABLE_NAME || "ScopeLogs",
       Item: marshall({
-        LogId: `LOG-${Date.now()}`,
+        LogId: logId,
         Timestamp: new Date().toISOString(),
         IsScopeCreep: result.isScopeCreep,
         RiskLevel: result.riskLevel,
@@ -144,6 +159,6 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     console.error("Analysis error", error);
     const message = error instanceof Error ? error.message : "Unknown server error";
-    return NextResponse.json({ error: "Failed to process scope evaluation.", details: message }, { status: 500 });
+    return NextResponse.json({ error: `Failed to process scope evaluation: ${message}` }, { status: 500 });
   }
 }
