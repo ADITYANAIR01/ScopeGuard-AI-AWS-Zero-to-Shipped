@@ -3,11 +3,13 @@
 @tailwind utilities;
 
 :root {
+  --font-manrope: "Segoe UI", "Helvetica Neue", sans-serif;
+  --font-space-grotesk: "Trebuchet MS", "Segoe UI", sans-serif;
   --ink: #101820;
   --paper: #f4f1ea;
-  --muted: #687178;
+  --muted: #5e686e;
   --line: #d9d6ce;
-  --coral: #f26b5b;
+  --coral: #b94f43;
   --teal: #0d766e;
 }
 
@@ -23,6 +25,10 @@ body {
 }
 ::selection { color: #fff; background: var(--coral); }
 textarea, input { font: inherit; }
+a:focus-visible, button:focus-visible {
+  outline: 3px solid var(--teal);
+  outline-offset: 3px;
+}
 
 @keyframes rise-in {
   from { opacity: 0; transform: translateY(14px); }

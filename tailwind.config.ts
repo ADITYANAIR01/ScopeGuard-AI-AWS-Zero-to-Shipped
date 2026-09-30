@@ -11,8 +11,8 @@ const config: Config = {
         teal: "#0d766e",
       },
       fontFamily: {
-        display: ["var(--font-space-grotesk)"],
-        body: ["var(--font-manrope)"],
+        display: ["var(--font-space-grotesk)", "sans-serif"],
+        body: ["var(--font-manrope)", "sans-serif"],
       },
     },
   },

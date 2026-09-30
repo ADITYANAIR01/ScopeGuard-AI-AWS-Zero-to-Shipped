@@ -185,7 +185,7 @@ export default function Analyzer() {
             type="button"
             onClick={handleAnalyze}
             disabled={loading}
-            className="mt-5 flex items-center justify-center gap-2 bg-[var(--coral)] px-5 py-4 font-display text-sm font-bold text-white transition hover:bg-[#ff806e] disabled:cursor-wait disabled:opacity-60"
+            className="mt-5 flex items-center justify-center gap-2 bg-[var(--coral)] px-5 py-4 font-display text-sm font-bold text-white transition hover:bg-[#a94439] disabled:cursor-wait disabled:opacity-60"
           >
             {loading ? (
               <>
