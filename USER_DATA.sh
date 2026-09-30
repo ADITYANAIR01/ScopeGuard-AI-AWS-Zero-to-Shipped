@@ -2,7 +2,7 @@
 set -euo pipefail
 
 yum update -y
-curl -fsSL https://rpm.nodesource.com/setup_20.x | bash -
+curl -fsSL https://rpm.nodesource.com/setup_22.x | bash -
 yum install -y nodejs git
 npm install -g pm2
 

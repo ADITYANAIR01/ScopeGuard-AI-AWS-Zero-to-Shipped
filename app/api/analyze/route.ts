@@ -4,7 +4,7 @@ import { PutObjectCommand } from "@aws-sdk/client-s3";
 import { marshall } from "@aws-sdk/util-dynamodb";
 import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
-import pdfParse from "pdf-parse";
+import { extractText } from "unpdf";
 import { bedrockClient, dynamoClient, s3Client } from "@/lib/aws";
 
 export const runtime = "nodejs";
@@ -95,15 +95,16 @@ export async function POST(request: NextRequest) {
       uploadedBuffer = buffer;
       uploadedKey = `contracts/${Date.now()}-${file.name.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
 
-      let pdfData;
+      let extractedPdfText = "";
       try {
-        pdfData = await pdfParse(buffer);
+        const { text } = await extractText(new Uint8Array(buffer), { mergePages: true });
+        extractedPdfText = (Array.isArray(text) ? text.join("\n") : text || "").trim();
       } catch (pdfError) {
         console.warn("PDF extraction failed, falling back to pasted contract text when available.", pdfError);
-        pdfData = { text: "" };
+        extractedPdfText = "";
       }
 
-      extractedContractText = (pdfData.text || "").trim();
+      extractedContractText = extractedPdfText;
       if (!extractedContractText && rawContractText) {
         extractedContractText = rawContractText;
       }

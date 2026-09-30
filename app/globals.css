@@ -1,6 +1,4 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
 
 :root {
   --font-manrope: "Segoe UI", "Helvetica Neue", sans-serif;
@@ -11,6 +9,17 @@
   --line: #d9d6ce;
   --coral: #b94f43;
   --teal: #0d766e;
+}
+
+@theme inline {
+  --font-display: var(--font-space-grotesk);
+  --font-body: var(--font-manrope);
+  --color-ink: var(--ink);
+  --color-paper: var(--paper);
+  --color-muted: var(--muted);
+  --color-line: var(--line);
+  --color-coral: var(--coral);
+  --color-teal: var(--teal);
 }
 
 * { box-sizing: border-box; }
