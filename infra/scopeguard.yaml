@@ -1,0 +1,472 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "ScopeGuard AI v2 locked stack — dedicated public-only VPC, ALB (HTTP redirect + HTTPS), ASG mixed 1 OD + Spot (t3.micro/t3.small, CPU 70%), S3 + DynamoDB TTL, Bedrock Kimi. No NAT, no WAF, no CloudFront, no Route53."
+Metadata:
+  AWSAgentToolkit:
+    AWSAgentToolkit: "aws-cloudformation@v3"
+  com.aws.cloudformation.Context:
+    why: "Codifies the live CLI-built v2 stack (AWS-infra.md section 8) so it can be reviewed, validated, and recreated as a stack."
+    must:
+      - "No NAT gateway, no WAF/rate-limiting, no CloudFront, no Route53 records — DNS stays at .tech registrar."
+      - "ASG stays min 1 / desired 2 / max 4 with 1 On-Demand base and Spot overflow, target-tracking CPU 70%."
+      - "Stateful resources (S3, DynamoDB) retain data on stack deletion."
+
+Parameters:
+  VpcCidr:
+    Type: String
+    Default: "10.20.0.0/16"
+  PublicSubnetACidr:
+    Type: String
+    Default: "10.20.1.0/24"
+  PublicSubnetBCidr:
+    Type: String
+    Default: "10.20.2.0/24"
+  BucketName:
+    Type: String
+    Default: "scopeguard-contracts-assets"
+  TableName:
+    Type: String
+    Default: "ScopeLogs"
+  DomainName:
+    Type: String
+    Default: "scopeguard.adityanair.tech"
+  CertificateArn:
+    Type: String
+    Default: "arn:aws:acm:ap-south-1:121490076448:certificate/f55a0e52-b43b-4050-a204-fba2f5632769"
+    Description: "Existing ISSUED ACM cert for DomainName in this region (DNS-validated at the .tech registrar). Reused so the stack does not create a second PENDING cert."
+  BedrockRegion:
+    Type: String
+    Default: "us-east-1"
+  BedrockModelId:
+    Type: String
+    Default: "moonshotai.kimi-k2.5"
+  GitRepo:
+    Type: String
+    Default: "https://github.com/ADITYANAIR01/ScopeGuard-AI-AWS-Zero-to-Shipped.git"
+  LatestAl2023Ami:
+    Type: "AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>"
+    Default: "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
+
+Resources:
+  Vpc:
+    Type: "AWS::EC2::VPC"
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: "Dedicated VPC so ScopeGuard never shares the default VPC."
+        must: ["CIDR 10.20.0.0/16; DNS support and hostnames on."]
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags: [{ Key: "Name", Value: "ScopeGuard-VPC" }]
+
+  InternetGateway:
+    Type: "AWS::EC2::InternetGateway"
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: "Only egress path — there is no NAT gateway by design."
+        must: ["Attached to ScopeGuard VPC."]
+    Properties:
+      Tags: [{ Key: "Name", Value: "ScopeGuard-IGW" }]
+
+  AttachGateway:
+    Type: "AWS::EC2::VPCGatewayAttachment"
+    Properties:
+      VpcId: !Ref Vpc
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicSubnetA:
+    Type: "AWS::EC2::Subnet"
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: "AZ 1a host for ALB + ASG instances."
+        must: ["Public IP on launch true; ALB needs two AZs."]
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Ref PublicSubnetACidr
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      MapPublicIpOnLaunch: true
+      Tags: [{ Key: "Name", Value: "ScopeGuard-Public-1a" }]
+
+  PublicSubnetB:
+    Type: "AWS::EC2::Subnet"
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: "AZ 1b host for ALB + ASG instances."
+        must: ["Public IP on launch true."]
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Ref PublicSubnetBCidr
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      MapPublicIpOnLaunch: true
+      Tags: [{ Key: "Name", Value: "ScopeGuard-Public-1b" }]
+
+  PublicRouteTable:
+    Type: "AWS::EC2::RouteTable"
+    Properties:
+      VpcId: !Ref Vpc
+      Tags: [{ Key: "Name", Value: "ScopeGuard-Public-RT" }]
+
+  PublicRoute:
+    Type: "AWS::EC2::Route"
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: "0.0.0.0/0"
+      GatewayId: !Ref InternetGateway
+
+  SubnetRouteAssocA:
+    Type: "AWS::EC2::SubnetRouteTableAssociation"
+    Properties:
+      SubnetId: !Ref PublicSubnetA
+      RouteTableId: !Ref PublicRouteTable
+
+  SubnetRouteAssocB:
+    Type: "AWS::EC2::SubnetRouteTableAssociation"
+    Properties:
+      SubnetId: !Ref PublicSubnetB
+      RouteTableId: !Ref PublicRouteTable
+
+  S3Endpoint:
+    Type: "AWS::EC2::VPCEndpoint"
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: "Free Gateway path so S3 traffic skips the IGW."
+        must: ["Gateway type; attached to the public route table."]
+    Properties:
+      VpcId: !Ref Vpc
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.s3"
+      RouteTableIds: [!Ref PublicRouteTable]
+
+  DynamoDbEndpoint:
+    Type: "AWS::EC2::VPCEndpoint"
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: "Free Gateway path so DynamoDB traffic skips the IGW."
+        must: ["Gateway type; attached to the public route table."]
+    Properties:
+      VpcId: !Ref Vpc
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.dynamodb"
+      RouteTableIds: [!Ref PublicRouteTable]
+
+  ContractsBucket:
+    Type: "AWS::S3::Bucket"
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: "Raw contract uploads; text is extracted at runtime, never sent as PDF to Bedrock."
+        must: ["Private, SSE AES256, contracts/* expires after 1 day."]
+    Properties:
+      BucketName: !Ref BucketName
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        IgnorePublicAcls: true
+        BlockPublicPolicy: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: { SSEAlgorithm: "AES256" }
+      VersioningConfiguration: { Status: "Suspended" }
+      LifecycleConfiguration:
+        Rules:
+          - Id: "contracts-1d-expire"
+            Status: "Enabled"
+            Prefix: "contracts/"
+            ExpirationInDays: 1
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 1
+
+  ContractsBucketPolicy:
+    Type: "AWS::S3::BucketPolicy"
+    Properties:
+      Bucket: !Ref ContractsBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: "DenyNonHttps"
+            Effect: "Deny"
+            Principal: "*"
+            Action: "s3:*"
+            Resource:
+              - !GetAtt ContractsBucket.Arn
+              - !Sub "${ContractsBucket.Arn}/*"
+            Condition:
+              Bool: { "aws:SecureTransport": false }
+
+  ScopeLogsTable:
+    Type: "AWS::DynamoDB::Table"
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: "Audit log for analyze results; app writes ExpiresAt = now + 24h."
+        must: ["On-demand billing; TTL attribute ExpiresAt enabled."]
+    Properties:
+      TableName: !Ref TableName
+      BillingMode: "PAY_PER_REQUEST"
+      AttributeDefinitions:
+        - { AttributeName: "LogId", AttributeType: "S" }
+      KeySchema:
+        - { AttributeName: "LogId", KeyType: "HASH" }
+      TimeToLiveSpecification: { AttributeName: "ExpiresAt", Enabled: true }
+      SSESpecification: { SSEEnabled: true }
+
+  Ec2Role:
+    Type: "AWS::IAM::Role"
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: "Instance role so EC2 uses no static keys."
+        must: ["Trust ec2.amazonaws.com only; scoped inline policy + SSM + CloudWatch agent."]
+    Properties:
+      RoleName: "ScopeGuard-EC2-Role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal: { Service: "ec2.amazonaws.com" }
+            Action: "sts:AssumeRole"
+      ManagedPolicyArns:
+        - "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+        - "arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy"
+      Policies:
+        - PolicyName: "ScopeGuard-App-Policy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action: ["bedrock:InvokeModel", "bedrock:ConverseStream", "bedrock:Converse"]
+                Resource:
+                  - !Sub "arn:aws:bedrock:${BedrockRegion}::foundation-model/moonshotai.kimi-k2.5"
+                  - !Sub "arn:aws:bedrock:${BedrockRegion}::foundation-model/moonshot.kimi-k2-thinking"
+                  - !Sub "arn:aws:bedrock:${BedrockRegion}::foundation-model/anthropic.claude-sonnet-4-5*"
+                  - !Sub "arn:aws:bedrock:${BedrockRegion}::foundation-model/anthropic.claude-haiku-4-5*"
+                  - !Sub "arn:aws:bedrock:${BedrockRegion}:${AWS::AccountId}:inference-profile/*"
+              - Effect: "Allow"
+                Action: ["s3:PutObject", "s3:GetObject"]
+                Resource: !Sub "arn:aws:s3:::${BucketName}/contracts/*"
+              - Effect: "Allow"
+                Action: ["dynamodb:PutItem", "dynamodb:GetItem", "dynamodb:Query", "dynamodb:Scan"]
+                Resource: !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${TableName}"
+
+  Ec2InstanceProfile:
+    Type: "AWS::IAM::InstanceProfile"
+    Properties:
+      InstanceProfileName: "ScopeGuard-EC2-Profile"
+      Roles: [!Ref Ec2Role]
+
+  AlbSecurityGroup:
+    Type: "AWS::EC2::SecurityGroup"
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: "Internet-facing ALB must accept 80/443 from the world; instances stay closed behind it."
+        must: ["Public 80/443 ingress is intentional here; never add 0.0.0.0/0 to the app SG."]
+    Properties:
+      GroupDescription: "ScopeGuard ALB"
+      GroupName: "ScopeGuard-ALB-SG"
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - { IpProtocol: "tcp", FromPort: 80, ToPort: 80, CidrIp: "0.0.0.0/0" }
+        - { IpProtocol: "tcp", FromPort: 443, ToPort: 443, CidrIp: "0.0.0.0/0" }
+      Tags: [{ Key: "Name", Value: "ScopeGuard-ALB-SG" }]
+
+  AppSecurityGroup:
+    Type: "AWS::EC2::SecurityGroup"
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: "App port reachable only from the ALB."
+        must: ["No 0.0.0.0/0 ingress; no SSH port — SSM only."]
+    Properties:
+      GroupDescription: "ScopeGuard App EC2"
+      GroupName: "ScopeGuard-App-SG"
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - IpProtocol: "tcp"
+          FromPort: 3000
+          ToPort: 3000
+          SourceSecurityGroupId: !Ref AlbSecurityGroup
+      Tags: [{ Key: "Name", Value: "ScopeGuard-App-SG" }]
+
+  TargetGroup:
+    Type: "AWS::ElasticLoadBalancingV2::TargetGroup"
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: "Routes ALB to Next.js on :3000 with fast drain."
+        must: ["Health check GET /; 30s deregistration; no stickiness."]
+    Properties:
+      Name: "scopeguard-tg"
+      Protocol: "HTTP"
+      Port: 3000
+      VpcId: !Ref Vpc
+      TargetType: "instance"
+      HealthCheckPath: "/"
+      HealthCheckIntervalSeconds: 30
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      TargetGroupAttributes:
+        - { Key: "deregistration_delay.timeout_seconds", Value: "30" }
+
+  AppLoadBalancer:
+    Type: "AWS::ElasticLoadBalancingV2::LoadBalancer"
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: "Single public entry point; TLS terminates here."
+        must: ["Internet-facing across both public subnets."]
+    Properties:
+      Name: "scopeguard-alb"
+      Scheme: "internet-facing"
+      Type: "application"
+      Subnets: [!Ref PublicSubnetA, !Ref PublicSubnetB]
+      SecurityGroups: [!Ref AlbSecurityGroup]
+      Tags: [{ Key: "Name", Value: "scopeguard-alb" }]
+
+  HttpListener:
+    Type: "AWS::ElasticLoadBalancingV2::Listener"
+    Properties:
+      LoadBalancerArn: !Ref AppLoadBalancer
+      Protocol: "HTTP"
+      Port: 80
+      DefaultActions:
+        - Type: "redirect"
+          RedirectConfig:
+            Protocol: "HTTPS"
+            Port: "443"
+            Host: "#{host}"
+            Path: "/#{path}"
+            Query: "#{query}"
+            StatusCode: "HTTP_301"
+
+  HttpsListener:
+    Type: "AWS::ElasticLoadBalancingV2::Listener"
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: "Serves scopeguard.adityanair.tech with the DNS-validated ACM cert."
+        must: ["TLS13-1-2 policy; forwards to scopeguard-tg."]
+    Properties:
+      LoadBalancerArn: !Ref AppLoadBalancer
+      Protocol: "HTTPS"
+      Port: 443
+      SslPolicy: "ELBSecurityPolicy-TLS13-1-2-2021-06"
+      Certificates:
+        - CertificateArn: !Ref CertificateArn
+      DefaultActions:
+        - Type: "forward"
+          TargetGroupArn: !Ref TargetGroup
+
+  LaunchTemplate:
+    Type: "AWS::EC2::LaunchTemplate"
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: "Builds the app from git on boot (mirrors USER_DATA.sh)."
+        must: ["IMDSv2 required; 30GB gp3; public IP (no NAT); instance profile attached."]
+    Properties:
+      LaunchTemplateName: "scopeguard-lt"
+      LaunchTemplateData:
+        ImageId: !Ref LatestAl2023Ami
+        IamInstanceProfile: { Name: !Ref Ec2InstanceProfile }
+        MetadataOptions: { HttpTokens: "required", HttpEndpoint: "enabled" }
+        NetworkInterfaces:
+          - AssociatePublicIpAddress: true
+            DeviceIndex: 0
+            Groups: [!Ref AppSecurityGroup]
+        BlockDeviceMappings:
+          - DeviceName: "/dev/xvda"
+            Ebs: { VolumeSize: 30, VolumeType: "gp3", DeleteOnTermination: true }
+        UserData:
+          Fn::Base64:
+            Fn::Sub:
+              - |
+                #!/bin/bash
+                set -euo pipefail
+                yum update -y
+                curl -fsSL https://rpm.nodesource.com/setup_22.x | bash -
+                yum install -y nodejs git
+                npm install -g pm2
+                cd /home/ec2-user
+                rm -rf ScopeGuard-AI-AWS-Zero-to-Shipped
+                git clone ${Repo} ScopeGuard-AI-AWS-Zero-to-Shipped
+                cd ScopeGuard-AI-AWS-Zero-to-Shipped
+                cat > .env.local <<'ENV'
+                AWS_REGION=${AWS::Region}
+                AWS_BEDROCK_REGION=${Bedrock}
+                S3_BUCKET_NAME=${Bucket}
+                DYNAMODB_TABLE_NAME=${Table}
+                BEDROCK_MODEL_ID=${Model}
+                PORT=3000
+                ENV
+                npm install
+                npm run build
+                pm2 start npm --name scopeguard -- start
+                pm2 startup systemd -u ec2-user --hp /home/ec2-user
+                pm2 save
+              - Repo: !Ref GitRepo
+                Bedrock: !Ref BedrockRegion
+                Bucket: !Ref BucketName
+                Table: !Ref TableName
+                Model: !Ref BedrockModelId
+        TagSpecifications:
+          - ResourceType: "instance"
+            Tags: [{ Key: "Name", Value: "scopeguard-app" }]
+
+  AutoScalingGroup:
+    Type: "AWS::AutoScaling::AutoScalingGroup"
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: "Stateless Next.js scales horizontally; 1 On-Demand base survives Spot reclaim."
+        must: ["min 1 / desired 2 / max 4; ELB health checks; capacity-optimized Spot."]
+    Properties:
+      AutoScalingGroupName: "scopeguard-asg"
+      VPCZoneIdentifier: [!Ref PublicSubnetA, !Ref PublicSubnetB]
+      MinSize: "1"
+      MaxSize: "4"
+      DesiredCapacity: "2"
+      HealthCheckType: "ELB"
+      HealthCheckGracePeriod: 300
+      TargetGroupARNs: [!Ref TargetGroup]
+      MixedInstancesPolicy:
+        LaunchTemplate:
+          LaunchTemplateSpecification:
+            LaunchTemplateId: !Ref LaunchTemplate
+            Version: !GetAtt LaunchTemplate.LatestVersionNumber
+          Overrides:
+            - { InstanceType: "t3.micro" }
+            - { InstanceType: "t3.small" }
+        InstancesDistribution:
+          OnDemandBaseCapacity: 1
+          OnDemandPercentageAboveBaseCapacity: 0
+          SpotAllocationStrategy: "capacity-optimized"
+      Tags:
+        - { Key: "Name", Value: "scopeguard-app", PropagateAtLaunch: true }
+
+  CpuScalingPolicy:
+    Type: "AWS::AutoScaling::ScalingPolicy"
+    Properties:
+      AutoScalingGroupName: !Ref AutoScalingGroup
+      PolicyName: "scopeguard-cpu70"
+      PolicyType: "TargetTrackingScaling"
+      TargetTrackingConfiguration:
+        PredefinedMetricSpecification:
+          PredefinedMetricType: "ASGAverageCPUUtilization"
+        TargetValue: 70.0
+
+  AppLogGroup:
+    Type: "AWS::Logs::LogGroup"
+    Properties:
+      LogGroupName: "/ScopeGuard/app"
+      RetentionInDays: 30
+
+Outputs:
+  AppUrl:
+    Description: "HTTPS app URL (needs the scopeguard CNAME at the .tech registrar)."
+    Value: !Sub "https://${DomainName}"
+  AlbDnsName:
+    Description: "ALB DNS — CNAME target for scopeguard.adityanair.tech."
+    Value: !GetAtt AppLoadBalancer.DNSName
+  AlbHttpUrl:
+    Description: "Redirects to HTTPS."
+    Value: !Sub "http://${AppLoadBalancer.DNSName}"
+  AutoScalingGroupName:
+    Value: !Ref AutoScalingGroup
+  BucketNameOut:
+    Value: !Ref ContractsBucket
+  TableNameOut:
+    Value: !Ref ScopeLogsTable

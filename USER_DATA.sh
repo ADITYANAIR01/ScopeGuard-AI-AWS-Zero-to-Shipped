@@ -15,6 +15,8 @@ AWS_REGION=ap-south-1
 AWS_BEDROCK_REGION=us-east-1
 S3_BUCKET_NAME=scopeguard-contracts-assets
 DYNAMODB_TABLE_NAME=ScopeLogs
+BEDROCK_MODEL_ID=moonshotai.kimi-k2.5
+PORT=3000
 ENV
 
 npm install
