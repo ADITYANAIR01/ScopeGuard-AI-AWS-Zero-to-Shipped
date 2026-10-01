@@ -1,8 +1,106 @@
-# ScopeGuard AI — Zero to Shipped Submission AI Pack
+# ScopeGuard AI — Zero to Shipped submission AI pack
 
-> Feed this entire file to any AI to generate exact Builder Center submission text + screenshots. No guessing — all values are from this repo.
+## 1. Builder Center copy-paste fields
 
-## 1. Machine-readable facts (copy as JSON to AI)
+### Title
+
+```text
+ScopeGuard AI — Stop giving away the work
+```
+
+### Tagline (max 120 chars)
+
+```text
+Extra-work detector for freelancers: SOW vs new ask, risk + reply in seconds on AWS
+```
+
+### Tags (must add both)
+
+```text
+#workplace-efficiency #startups
+```
+
+### Short description
+
+```text
+ScopeGuard AI helps freelancers quickly spot scope creep by comparing what was agreed with a new client request. Get a clear Extra work Yes/No decision, risk level, supporting clause, estimated extra hours, and a copy-ready reply. Live at https://scopeguard.adityanair.tech.
+```
+
+### Long description
+
+```text
+Problem: Freelancers, agencies, students and small businesses constantly get "just one more thing" requests that quietly blow scope with no pay.
+
+What I shipped: Open https://scopeguard.adityanair.tech/dashboard → upload an SOW PDF or DOCX (≤10MB) or paste text → paste the new ask → Check my request → get Extra work: Yes/No, Risk, Extra hours, Why, Cited clause, What to reply. Copy reply or download summary. Includes sample case + compressor links (iLovePDF/IHatePDF) + client-side 10MB validation. Dark mode included.
+
+How it works: Browser → ALB :443 → ASG EC2 (Next.js :3000) → POST /api/analyze → unpdf/mammoth extract → S3 PutObject contracts/<ts>-<file> [ap-south-1] → Bedrock Converse moonshotai.kimi-k2.5 [us-east-1, JSON-only, conservative] → validation + normalizeResult → DynamoDB PutItem ScopeLogs with ExpiresAt=now+24h → JSON to browser.
+
+Why AWS: ALB (HTTPS, health checks) + ASG (1 On-Demand + Spot overflow, CPU 70%) for cheap resilience, S3 for contract retention, DynamoDB On-Demand for audit, Bedrock for reasoning, IAM roles (no static keys), dedicated VPC with free S3/DDB endpoints and no NAT to reduce cost, ACM + CloudWatch for operations. The stack is documented in AWS-infra.md and codified in infra/scopeguard.yaml.
+
+Coding agent: Built with OpenCode/Muse Spark connected to AWS via CLI. The agent created the dedicated VPC, S3 + DDB + IAM + ALB + ASG via an idempotent playbook, migrated Bedrock from the retired Claude 3.5 Sonnet path to `moonshotai.kimi-k2.5`, fixed the `normalizeResult` bug (empty `violatedClause` on in-scope results), wired 24h privacy expiry, cut over the custom domain with ACM HTTPS, built the OIDC GitHub Actions pipeline, and verified lint, build, and live HTTPS smoke tests.
+
+Lane: Startups — path to SaaS for freelancers/agencies: paid change-order tracking, team workspaces, and first users from freelancer communities.
+Live app: https://scopeguard.adityanair.tech
+Category: Workplace efficiency. Lane: Startups.
+```
+
+### Development process
+
+```text
+1. Scaffolded the Next.js + analyzer UI at / and /dashboard
+2. Built POST /api/analyze: validate → extract (unpdf/mammoth) → S3 → Bedrock → validate → DDB → JSON
+3. Connected the coding agent to AWS via CLI: v1 stack (S3 + DDB + IAM + SG) using the playbook in AWS-infra.md
+4. Hit Bedrock EOL on the older Claude path and migrated to moonshotai.kimi-k2.5 while widening IAM and re-verifying the Converse API
+5. Smoke-tested HIGH creep, LOW in-scope, 400 validation errors, and a real PDF upload; fixed the violatedClause bug
+6. Added 24h auto-delete (S3 lifecycle + DDB TTL + ExpiresAt) plus clearer copy and dark mode
+7. Rebuilt the app as v2: dedicated VPC (no NAT) + ALB + ASG mixed On-Demand/Spot + CPU 70% + CloudFormation template
+8. Cut over scopeguard.adityanair.tech (registrar CNAMEs, ACM issued, :443 + 80→443 redirect)
+9. Added GitHub Actions OIDC pipeline (lint + build, instance refresh + live HTTPS verify) — the first deploy is green
+```
+
+### How coding agent helped
+
+```text
+OpenCode/Muse Spark with AWS CLI access did: infra-as-docs (AWS-infra.md locked architecture + CLI playbook + live state with every ID and ARN), IAM least-privilege policies (app + GitHub OIDC), VPC/ALB/ASG/ACM commands, Bedrock model migration + prompt hardening, normalizeResult bug fix, privacy TTL wiring, USER_DATA.sh, domain cutover (certificate request, validation records, HTTPS listeners), the full GitHub Actions workflow, the CloudFormation template, and verification at each stage (lint, build, target group healthy, HTTPS 200s, E2E analyze). Proof: AWS-infra.md §8 live state + `sts`/`elbv2`/`autoscaling`/`acm` outputs + green Actions run.
+```
+
+## 2. Screenshot list (7 required)
+
+Take at 1440x900 in Chrome with light mode, no devtools. Filenames must match exactly.
+
+1. `01-landing-hero.png` — Go to `https://scopeguard.adityanair.tech/`. Show “Stop giving away the work.”, the **Check my request** CTA, the scope review card, and the “auto-deleted within 24 hours” label. This proves the live domain is active.
+2. `02-dashboard-empty.png` — Go to `/dashboard`. Show “Is this extra work?” with upload agreement, pasted contract text, and client request boxes in an empty state. Caption: “Paste agreement + new ask”.
+3. `03-dashboard-creep-high.png` — Use the sample case or a real SOW like “5-page website”; the client request says “Build a customer portal + login.” Click **Check**. Show result: Extra work: Yes, HIGH, 80h, cited clause, why, what to reply, and copy/download controls.
+4. `04-dashboard-inscope-low.png` — Same SOW, request: “Fix typo on homepage headline.” Show result: Extra work: No, LOW, 0h, “N/A — within scope”.
+5. `05-aws-proof.png` — Include both: (a) terminal output from `aws elbv2 describe-load-balancers --names scopeguard-alb`, `aws autoscaling describe-auto-scaling-groups`, and `aws acm describe-certificate`; (b) EC2 target group showing `scopeguard-tg` with 2/2 healthy. This proves AWS use and agent-to-AWS connectivity.
+6. `06-architecture.png` — Diagram: Browser → ALB :443 → ASG (OD + Spot) :3000 → S3 + Bedrock us-east-1 + DynamoDB in the ap-south-1 VPC (`10.20.0.0/16`). Include region labels.
+7. `07-actions-green.png` — GitHub Actions run “ScopeGuard CI/CD” fully green with the verify step showing `DEPLOY OK`. This proves the pipeline ships changes to the live app.
+
+AI image prompt (only if needed for a cover; do not fake the UI):
+
+```text
+"Flat editorial illustration, cream #f5f1e8 background, shield-check icon, freelancer desk with contract + chat bubble 'just one more portal?', arrow to 'Extra work: YES HIGH 80h', small AWS + Bedrock badges, no text typos"
+```
+
+## 3. Ship-gate checklist
+
+- [x] ALB `scopeguard-alb` active, `https://scopeguard.adityanair.tech/` 200, `/dashboard` 200, analyze E2E valid JSON
+- [x] ASG `scopeguard-asg` 1/2/4, TG `scopeguard-tg` 2/2 healthy, ACM issued, :80→443 redirect
+- [x] S3 `scopeguard-contracts-assets` (lifecycle 1d) + DDB `ScopeLogs` (TTL) in `ap-south-1`, IAM roles attached
+- [x] Bedrock `moonshotai.kimi-k2.5` in `us-east-1` converse OK
+- [x] GitHub Actions pipeline green, CloudFormation `infra/scopeguard.yaml` validate-template OK
+- [ ] Builder Center project has both tags, live URL, repo, screenshots 01–07, and optionally a demo video
+- [ ] Original app, 18+, Builder Center profile, and rules are all valid
+
+## 4. One-shot AI prompt
+
+```text
+Using ONLY the JSON in §1 and the verbatim text in §2, generate: (1) Builder Center title/tagline/short/long/process/agent-help under limits, (2) 7 screenshot captions ≤140 chars each, and (3) a 30-second demo script. Do not invent URLs, metrics, or AWS resources. Live URL is https://scopeguard.adityanair.tech. Category #workplace-efficiency, lane #startups. Tone: plain, freelancer-friendly, no jargon.
+```
+
+> Feed this entire file to any AI to generate submission text and screenshot captions. Use only repo data and the live AWS state, not guesses.
+
+## 5. Machine-readable facts
 
 ```json
 {
@@ -12,20 +110,25 @@
   "category_tag": "#workplace-efficiency",
   "lane": "Startups",
   "lane_tag": "#startups",
-  "stack": ["Next.js 15.5.26", "React 19", "TypeScript", "Tailwind CSS 4", "Node.js 22", "unpdf"],
+  "live_url": "https://scopeguard.adityanair.tech",
+  "repo_url": "https://github.com/ADITYANAIR01/ScopeGuard-AI-AWS-Zero-to-Shipped",
+  "stack": ["Next.js 15.5.26", "React 19", "TypeScript", "Tailwind CSS 4", "Node.js 22", "unpdf", "mammoth"],
   "aws_services": {
-    "compute": "Amazon EC2 Amazon Linux 2023 t3.micro, Node 22 + PM2, port 3000, ap-south-1",
-    "ai": "Amazon Bedrock Converse API, model moonshotai.kimi-k2.5, region us-east-1, temp 1.0, maxTokens 4000",
-    "storage": "Amazon S3 scopeguard-contracts-assets, prefix contracts/, ap-south-1, SSE-S3, BlockPublicAccess, 24h lifecycle expire",
-    "database": "Amazon DynamoDB ScopeLogs, PK LogId (S), PAY_PER_REQUEST, TTL on ExpiresAt (24h), ap-south-1",
-    "iam": "ScopeGuard-EC2-Role + ScopeGuard-EC2-Profile, least-privilege, no static creds",
-    "network": "ScopeGuard-SG sg-0437f09fe9091bd9e, 3000/tcp, VPC vpc-0ed6a380c2aef2f00",
-    "ops": "SSM Session Manager, CloudWatch Logs"
+    "network": "Dedicated VPC ScopeGuard-VPC (10.20.0.0/16) with two public subnets, an IGW, and free S3/DDB Gateway Endpoints",
+    "entry": "ALB scopeguard-alb with :443 HTTPS and :80 redirect to :443; forwards to the scopeguard-tg target group",
+    "compute": "ASG scopeguard-asg with min 1 / desired 2 / max 4, mixed On-Demand + Spot, target tracking at CPU 70%",
+    "ai": "Amazon Bedrock Converse API using moonshotai.kimi-k2.5 in us-east-1",
+    "storage": "Amazon S3 bucket scopeguard-contracts-assets in ap-south-1 with lifecycle expiry for contracts/",
+    "database": "Amazon DynamoDB ScopeLogs in ap-south-1 with PAY_PER_REQUEST billing and ExpiresAt TTL",
+    "iam": "EC2 instance profile with least-privilege permissions and no static credentials",
+    "ops": "SSM Session Manager and CloudWatch log group /ScopeGuard/app"
   },
+  "cicd": "GitHub Actions pipeline with lint + build + ASG rolling deploy and live HTTPS verification",
+  "iac": "CloudFormation stack in infra/scopeguard.yaml codifies the v2 deployment",
   "routes": {
     "landing": "/",
     "dashboard": "/dashboard",
-    "api": "POST /api/analyze (multipart/form-data: contractFile?: PDF<=10MB, contractText?: <=120k chars, clientRequest: required <=8k chars)"
+    "api": "POST /api/analyze (multipart/form-data: contractFile?: PDF/DOCX <=10MB, contractText?: <=120k chars, clientRequest: required <=8k chars)"
   },
   "api_response": {
     "isScopeCreep": true,
@@ -35,99 +138,14 @@
     "estimatedExtraHours": 24,
     "suggestedEmailResponse": "string"
   },
-  "coding_agent": "OpenCode + Muse Spark (muse-spark-1.3-contributor-free), connected to AWS via AWS MCP run_script + aws login, documented in AWS-infra.md",
-  "proof_artifacts": ["AWS-infra.md section 4 live state table", "aws sts get-caller-identity 121490076448", "s3 head-bucket", "dynamodb describe-table ScopeLogs ACTIVE", "bedrock-runtime converse moonshotai.kimi-k2.5 OK", "USER_DATA.sh EC2 bootstrap"],
-  "placeholders_to_fill": {
-    "LIVE_URL": "https://YOUR-EC2-PUBLIC-IP:3000 or https://yourdomain.com",
-    "REPO_URL": "https://github.com/YOUR-USER/ScopeGuard-AI-AWS-Zero-to-Shipped",
-    "BUILDER_CENTER_URL": "https://builder.aws.com/...",
-    "DEMO_VIDEO_URL": "https://youtube.com/... (optional but boosts AI score)"
-  }
+  "coding_agent": "OpenCode + Muse Spark connected to AWS via AWS CLI and documented in AWS-infra.md",
+  "proof_artifacts": [
+    "AWS-infra.md live-state section",
+    "aws sts get-caller-identity output",
+    "ALB https://scopeguard.adityanair.tech 200 + E2E analyze valid JSON",
+    "ASG 1/2/4 + ACM issued + target group healthy",
+    "GitHub Actions green deploy run",
+    "infra/scopeguard.yaml validate-template OK"
+  ]
 }
-```
-
-## 2. Builder Center copy-paste fields (exact output)
-
-### Title
-```
-ScopeGuard AI — Stop giving away the work
-```
-
-### Tagline (max 120 chars)
-```
-Extra-work detector for freelancers: SOW vs new ask, risk + reply in seconds on AWS
-```
-
-### Tags (must add both)
-```
-#workplace-efficiency #startups
-```
-
-### Short description (use verbatim)
-```
-ScopeGuard AI is a Next.js 15 app on Amazon EC2 that compares your client SOW (PDF or pasted text) against a new client request, calls Amazon Bedrock (moonshotai.kimi-k2.5 in us-east-1) to judge scope creep, stores PDFs in S3 (scopeguard-contracts-assets/contracts/) and audit logs in DynamoDB (ScopeLogs), and returns: Extra work Yes/No, Risk LOW/MEDIUM/HIGH, cited clause, why, extra hours, and a copy-ready client reply. Data auto-deletes in 24h (S3 lifecycle + DynamoDB TTL).
-```
-
-### Long description (use verbatim for AI scoring)
-```
-Problem: Freelancers, agencies, students and small businesses constantly get "just one more thing" requests that quietly blow scope with no pay.
-
-What I shipped: Open /dashboard → upload SOW PDF (≤10MB) or paste text → paste the new ask → Check my request → get Extra work: Yes/No, Risk, Extra hours, Why, Cited clause, What to reply. Copy reply or download summary. Includes sample case + compressor links (iLovePDF/IHatePDF) + 10MB client-side check.
-
-How it works: POST /api/analyze → unpdf.extractText → S3 PutObject contracts/<ts>-<file> [ap-south-1] → Bedrock Converse moonshotai.kimi-k2.5 [us-east-1, JSON-only, conservative] → validate normalizeResult → DynamoDB PutItem ScopeLogs with ExpiresAt=now+24h → JSON to browser.
-
-Why AWS: EC2 (Next.js needs Node runtime, no Lambda/API-GW), S3 for contract retention, DynamoDB On-Demand for audit, Bedrock for reasoning, IAM role (no static keys), SG ScopeGuard-SG, SSM + CloudWatch for ops.
-
-Coding agent: Built with OpenCode/Muse Spark connected to AWS console via AWS MCP (run_script). Agent generated USER_DATA.sh, IAM least-privilege policy, S3/DDB/EC2 playbook in AWS-infra.md, wired Bedrock model swap from retired Claude 3.5 Sonnet to kimi-k2.5, fixed normalizeResult bug (empty violatedClause on in-scope), added 24h privacy expiry, and verified lint+build+5 API smoke tests all-green.
-
-Lane: Startups — path to SaaS for freelancers/agencies: paid change-order tracking, team workspaces, first users = freelancer communities.
-Live app: LIVE_URL
-Category: Workplace efficiency. Lane: Startups.
-```
-
-### Development process (use verbatim)
-```
-1. Scaffolded Next.js + analyzer UI (/ + /dashboard/analyzer.tsx)
-2. Built POST /api/analyze: validate → pdf extract → S3 → Bedrock → validate → DDB → JSON
-3. Connected agent to AWS: aws login → created S3+DDB+IAM+SG via CLI playbook (AWS-infra.md §3)
-4. Hit Bedrock EOL (Claude 3.5 Sonnet retired) → agent migrated to moonshotai.kimi-k2.5, widened IAM, re-verified converse
-5. Smoke tests: HIGH creep, LOW in-scope, 400s, real PDF → fixed violatedClause bug
-6. Added 24h auto-delete (S3 lifecycle + DDB TTL + ExpiresAt) + plain-language copy
-7. EC2 USER_DATA.sh ready, SG hardening + ALB/HTTPS noted as pre-prod TODOs
-```
-
-### How coding agent helped (use verbatim)
-```
-OpenCode/Muse Spark with AWS MCP did: infra-as-docs (AWS-infra.md generic pattern + planned params + CLI playbook + live state), IAM least-privilege JSON, S3/DDB/EC2 commands, Bedrock model migration + prompt hardening, bug fix in normalizeResult, privacy TTL wiring, USER_DATA.sh, and full verification (lint, build, /, /dashboard 200, 5 API cases). Proof: AWS-infra.md §4 run log + sts/s3/ddb/bedrock outputs.
-```
-
-## 3. Screenshots — exact shot list (6 required)
-
-Take at 1440x900, Chrome, light, no devtools. Filenames exact.
-
-1. `01-landing-hero.png` — Go to `/`. Show: "Stop giving away the work." + Check my request + Scope review/0042 card + "auto-deleted within 24 hours". This proves storytelling.
-2. `02-dashboard-empty.png` — Go to `/dashboard`. Show: "Is this extra work?" + Upload agreement (PDF) + Paste what you agreed + client request box + empty state. Caption: "Paste agreement + new ask".
-3. `03-dashboard-creep-high.png` — Use sample case or: SOW="5-page website", Request="Build new customer portal + login". Click Check. Show result: Extra work: Yes, HIGH, 80h, Cited clause, Why, What to reply + Copy + Download.
-4. `04-dashboard-inscope-low.png` — Same SOW, Request="Fix typo on homepage headline". Show: Extra work: No, LOW, 0h, "N/A — within scope".
-5. `05-aws-proof.png` — Split or 2 crops: (a) Terminal `aws sts get-caller-identity + s3 head-bucket + dynamodb describe-table ScopeLogs ACTIVE`, (b) AWS Console S3 `scopeguard-contracts-assets/contracts/` + DynamoDB `ScopeLogs` items with `ExpiresAt`. This proves agent-to-AWS connection + live AWS use.
-6. `06-architecture.png` — Render README mermaid flowchart OR AWS-infra.md diagram. Show: Browser → Next.js :3000 (EC2) → S3 + Bedrock us-east-1 + DynamoDB. Caption with regions.
-
-AI image prompt (only if you need a cover, do NOT fake UI):
-```
-"Flat editorial illustration, cream #f5f1e8 background, shield-check icon, freelancer desk with contract + chat bubble 'just one more portal?', arrow to 'Extra work: YES HIGH 80h', small AWS + Bedrock badges, no text typos"
-```
-
-## 4. Ship-gate checklist (must all be YES before submit)
-
-- [ ] EC2 running `ScopeGuard-AI` t3.micro ap-south-1, PM2 `npm start`, port 3000 reachable
-- [ ] LIVE_URL public, loads `/` in incognito, `/dashboard` 200, analyze works with sample
-- [ ] S3 `scopeguard-contracts-assets` + DDB `ScopeLogs` in ap-south-1, IAM role attached
-- [ ] Bedrock `moonshotai.kimi-k2.5` in us-east-1 converse OK
-- [ ] Builder Center project has both tags + LIVE_URL + repo + screenshots 01-06 + video (optional)
-- [ ] Original app, 18+, Builder Center profile, rules OK
-
-## 5. One-shot AI prompt (feed to AI for final submission)
-
-```
-Using ONLY the JSON in §1 + verbatim texts in §2, generate: (1) Builder Center title/tagline/short/long/process/agent-help under limits, (2) 6 screenshot captions ≤140 chars each, (3) 30-sec demo script. Do not invent URLs, metrics, or AWS resources. Use LIVE_URL placeholder as-is. Category #workplace-efficiency, lane #startups. Tone: plain, freelancer-friendly, no jargon.
 ```
