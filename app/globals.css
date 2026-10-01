@@ -24,6 +24,7 @@
 
 * { box-sizing: border-box; }
 html { background: var(--paper); }
+html { scroll-behavior: smooth; }
 body {
   margin: 0;
   color: var(--ink);
@@ -31,6 +32,7 @@ body {
     radial-gradient(circle at 8% 2%, rgba(242, 107, 91, 0.13), transparent 24rem),
     linear-gradient(135deg, #f4f1ea 0%, #efebe2 100%);
   font-family: var(--font-manrope), sans-serif;
+  transition: background-color 0.35s ease, color 0.35s ease;
 }
 ::selection { color: #fff; background: var(--coral); }
 textarea, input { font: inherit; }
@@ -45,3 +47,69 @@ a:focus-visible, button:focus-visible {
 }
 .animate-rise { animation: rise-in 0.55s ease-out both; }
 .animate-rise-delay { animation: rise-in 0.55s 0.12s ease-out both; }
+
+@keyframes pop-in {
+  from { opacity: 0; transform: translateY(18px) scale(0.985); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+.animate-pop { animation: pop-in 0.5s cubic-bezier(0.22, 1, 0.36, 1) both; }
+
+@keyframes cue-bob {
+  0%, 100% { transform: translate(-50%, 0); }
+  50% { transform: translate(-50%, 8px); }
+}
+.animate-cue { animation: cue-bob 1.6s ease-in-out infinite; }
+
+/* ---------- Dark mode (toggled via <html data-theme="dark">) ---------- */
+[data-theme="dark"] {
+  --ink: #ece5d8;
+  --paper: #141a20;
+  --muted: #9aa3ab;
+  --line: #2c343d;
+  --coral: #c65e51;
+  --teal: #4cbcae;
+  color-scheme: dark;
+}
+[data-theme="dark"] html { background: #0f1419; }
+[data-theme="dark"] body {
+  background:
+    radial-gradient(circle at 8% 2%, rgba(224, 127, 112, 0.14), transparent 24rem),
+    linear-gradient(135deg, #141a20 0%, #0f1419 100%);
+}
+/* Ink buttons: dark pill + light text in light mode, flipped correctly in dark */
+[data-theme="dark"] .sg-btn-ink {
+  background-color: var(--coral) !important;
+  border-color: var(--coral) !important;
+  color: #141a20 !important;
+}
+[data-theme="dark"] .sg-btn-ink:hover {
+  background-color: #f0a89d !important;
+  border-color: #f0a89d !important;
+  color: #0f1419 !important;
+}
+/* Pastel chips + hard shadows retuned for dark */
+[data-theme="dark"] .sg-chip { background-color: rgba(76, 188, 174, 0.18) !important; }
+[data-theme="dark"] .sg-hardshadow { box-shadow: 14px 14px 0 #05080b !important; }
+[data-theme="dark"] .sg-keep-dark {
+  background-color: #0f1419 !important;
+  border-color: #2c343d !important;
+}
+/* Light cards → dark surfaces */
+[data-theme="dark"] .sg-card {
+  background-color: rgba(27, 34, 41, 0.9) !important;
+  border-color: var(--line) !important;
+}
+/* Full-bleed light bands (landing) */
+[data-theme="dark"] .sg-band { background-color: #12171d !important; }
+[data-theme="dark"] .sg-page { background: var(--paper) !important; }
+/* Feedback boxes */
+[data-theme="dark"] .sg-error {
+  background-color: rgba(224, 127, 112, 0.1) !important;
+  border-color: rgba(224, 127, 112, 0.45) !important;
+  color: #f0a89d !important;
+}
+[data-theme="dark"] .sg-note {
+  background-color: rgba(76, 188, 174, 0.1) !important;
+  border-color: rgba(76, 188, 174, 0.4) !important;
+  color: #9ad9cf !important;
+}

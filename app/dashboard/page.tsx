@@ -1,5 +1,6 @@
 import Link from "next/link";
 import Analyzer from "./analyzer";
+import ThemeToggle from "../components/ThemeToggle";
 
 export default function DashboardPage() {
   return (
@@ -7,7 +8,10 @@ export default function DashboardPage() {
       <div className="mx-auto max-w-6xl">
         <div className="mb-7 flex items-center justify-between border-b border-[var(--line)] pb-6">
           <Link href="/" className="font-display text-sm font-bold tracking-tight text-[var(--muted)] transition hover:text-[var(--ink)]">← ScopeGuard<span className="text-[var(--coral)]">.</span></Link>
-          <span className="font-display text-xs font-bold uppercase tracking-[0.16em] text-[var(--muted)]">Workspace / Analyzer</span>
+          <div className="flex items-center gap-3">
+            <span className="font-display text-xs font-bold uppercase tracking-[0.16em] text-[var(--muted)]">Workspace / Analyzer</span>
+            <ThemeToggle />
+          </div>
         </div>
         <Analyzer />
       </div>

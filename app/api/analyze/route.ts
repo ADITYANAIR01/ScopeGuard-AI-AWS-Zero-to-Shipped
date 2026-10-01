@@ -12,7 +12,9 @@ export const runtime = "nodejs";
 const MAX_FILE_SIZE = 10 * 1024 * 1024;
 const MAX_CONTRACT_CHARS = 120_000;
 const MAX_REQUEST_CHARS = 8_000;
-const MODEL_ID = "anthropic.claude-3-5-sonnet-20240620-v1:0";
+// Active Bedrock model (us-east-1, ON_DEMAND). Old claude-3-5-sonnet-20240620 is EOL.
+// Kimi K2.5 runs in non-thinking JSON mode: requires temperature 1.0.
+const MODEL_ID = process.env.BEDROCK_MODEL_ID || "moonshotai.kimi-k2.5";
 
 type AnalysisResult = {
   isScopeCreep: boolean;
@@ -30,9 +32,14 @@ function normalizeResult(value: unknown): AnalysisResult {
 
   const candidate = value as Record<string, unknown>;
   const risk = candidate.riskLevel;
-  if (typeof candidate.isScopeCreep !== "boolean") throw new Error("Bedrock returned an invalid scope assessment.");
+  const isScopeCreep = candidate.isScopeCreep;
+  if (typeof isScopeCreep !== "boolean") throw new Error("Bedrock returned an invalid scope assessment.");
   if (risk !== "LOW" && risk !== "MEDIUM" && risk !== "HIGH") throw new Error("Bedrock returned an invalid risk level.");
-  if (typeof candidate.violatedClause !== "string" || !candidate.violatedClause.trim()) throw new Error("Bedrock returned an invalid clause.");
+  // In-scope results legitimately have no violated clause — Kimi returns "".
+  // Only require a citation when scope actually changed.
+  let violatedClause = typeof candidate.violatedClause === "string" ? candidate.violatedClause.trim() : "";
+  if (isScopeCreep && !violatedClause) throw new Error("Bedrock returned an invalid clause.");
+  if (!violatedClause) violatedClause = "N/A — request is within agreed scope.";
   if (typeof candidate.analysis !== "string" || !candidate.analysis.trim()) throw new Error("Bedrock returned invalid analysis.");
   if (typeof candidate.suggestedEmailResponse !== "string" || !candidate.suggestedEmailResponse.trim()) {
     throw new Error("Bedrock returned an invalid response draft.");
@@ -44,9 +51,9 @@ function normalizeResult(value: unknown): AnalysisResult {
   }
 
   return {
-    isScopeCreep: candidate.isScopeCreep,
+    isScopeCreep,
     riskLevel: risk,
-    violatedClause: candidate.violatedClause.trim(),
+    violatedClause,
     analysis: candidate.analysis.trim(),
     estimatedExtraHours: Math.round(hours * 10) / 10,
     suggestedEmailResponse: candidate.suggestedEmailResponse.trim(),
@@ -86,7 +93,7 @@ export async function POST(request: NextRequest) {
     let uploadedBuffer: Buffer | undefined;
 
     if (file instanceof File && file.size > 0) {
-      if (file.size > MAX_FILE_SIZE) return jsonError("PDF must be smaller than 10 MB.", 400);
+      if (file.size > MAX_FILE_SIZE) return jsonError("That file is too big — try under 10 MB.", 400);
       if (file.type !== "application/pdf" && !file.name.toLowerCase().endsWith(".pdf")) {
         return jsonError("Only PDF contracts are supported.", 400);
       }
@@ -128,20 +135,22 @@ export async function POST(request: NextRequest) {
       }));
     }
 
-    const systemPrompt = `You are ScopeGuard AI, a contract compliance analyst. Compare a Statement of Work against an incoming client request. Return only valid JSON, with no markdown, using exactly this schema: {"isScopeCreep": boolean, "riskLevel": "LOW" | "MEDIUM" | "HIGH", "violatedClause": string, "analysis": string, "estimatedExtraHours": number, "suggestedEmailResponse": string}. Cite the relevant SOW language in violatedClause when scope has changed. Be conservative: missing detail is not proof of scope creep.`;
+    const systemPrompt = `You are ScopeGuard AI, a contract compliance analyst. Compare a Statement of Work against an incoming client request. Use non-thinking mode. Return only valid JSON, with no markdown, no thinking trace, using exactly this schema: {"isScopeCreep": boolean, "riskLevel": "LOW" | "MEDIUM" | "HIGH", "violatedClause": string, "analysis": string, "estimatedExtraHours": number, "suggestedEmailResponse": string}. Cite the relevant SOW language in violatedClause when scope has changed. Be conservative: missing detail is not proof of scope creep.`;
     const userMessage = `STATEMENT OF WORK:\n${extractedContractText}\n\nINCOMING CLIENT REQUEST:\n${clientRequest}`;
 
     const response = await bedrockClient.send(new ConverseCommand({
       modelId: MODEL_ID,
       system: [{ text: systemPrompt }],
       messages: [{ role: "user", content: [{ text: userMessage }] }],
-      inferenceConfig: { temperature: 0.1, maxTokens: 1500 },
+      inferenceConfig: { temperature: 1.0, maxTokens: 4000 },
     }));
 
     const responseText = response.output?.message?.content?.find((item) => item.text)?.text;
     if (!responseText) throw new Error("Bedrock returned an empty response.");
     const result = normalizeResult(parseJsonResponse(responseText));
     const logId = `LOG-${Date.now()}-${randomUUID()}`;
+    // Auto-expire audit logs within 24h (DynamoDB TTL on ExpiresAt).
+    const expiresAt = Math.floor(Date.now() / 1000) + 24 * 60 * 60;
 
     await dynamoClient.send(new PutItemCommand({
       TableName: process.env.DYNAMODB_TABLE_NAME || "ScopeLogs",
@@ -153,6 +162,7 @@ export async function POST(request: NextRequest) {
         ClientRequest: clientRequest.slice(0, 500),
         EstimatedHours: result.estimatedExtraHours,
         ContractKey: uploadedKey || "pasted-text",
+        ExpiresAt: expiresAt,
       }),
     }));
 
@@ -160,6 +170,10 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     console.error("Analysis error", error);
     const message = error instanceof Error ? error.message : "Unknown server error";
-    return NextResponse.json({ error: `Failed to process scope evaluation: ${message}` }, { status: 500 });
+    // Keep internals in logs; users get plain words.
+    const friendly = /bedrock|malformed|invalid|empty response/i.test(message)
+      ? "Hmm, that answer didn't come out right. Try again with a smaller file or compress your PDF."
+      : message;
+    return NextResponse.json({ error: `Failed to process scope evaluation: ${friendly}` }, { status: 500 });
   }
 }
