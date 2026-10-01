@@ -1,7 +1,10 @@
 "use client";
 
-import { ChangeEvent, type ReactNode, useMemo, useRef, useState } from "react";
-import { ArrowDown, Check, CheckCircle2, Clipboard, Download, FileDown, FileText, LoaderCircle, Lock, Send, ShieldAlert, ShieldCheck, Timer, Upload, X } from "lucide-react";
+import { ChangeEvent, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { ArrowDown, Check, CheckCircle2, Clipboard, FileDown, FileText, LoaderCircle, Lock, Send, ShieldAlert, ShieldCheck, Timer, Upload, X } from "lucide-react";
+import { getOrCreateUserId } from "@/lib/user-id";
+import { downloadAnalysisPdf } from "@/lib/pdf-export";
+import { saveHistoryRecord } from "@/lib/history-store";
 
 type AnalysisResult = {
   isScopeCreep: boolean;
@@ -12,31 +15,26 @@ type AnalysisResult = {
   suggestedEmailResponse: string;
 };
 
+type ReplyTone = "firm" | "friendly" | "formal";
+
+const tones: { value: ReplyTone; label: string; hint: string }[] = [
+  { value: "firm", label: "Firm", hint: "Direct about boundaries and costs" },
+  { value: "friendly", label: "Friendly", hint: "Warm and collaborative" },
+  { value: "formal", label: "Formal", hint: "Businesslike, cites the agreement" },
+];
+
+// Staged progress shown while the model thinks (5–15s). Beats a bare spinner.
+const stages = [
+  "Reading your agreement…",
+  "Comparing against the request…",
+  "Checking for scope changes…",
+  "Drafting your response…",
+];
+
 const examples = {
   contract: "The project includes a responsive marketing website with up to five pages. Copywriting, ongoing content updates, and new integrations are excluded from this engagement.",
   request: "Could you also add a customer portal with login, billing history, and a dashboard for the sales team? We would love to have this in the first release.",
 };
-
-function buildSummaryText(result: AnalysisResult, timestamp: string) {
-  return [
-    "ScopeGuard AI - Extra-work answer",
-    `Generated: ${timestamp}`,
-    "",
-    `Extra work: ${result.isScopeCreep ? "Yes" : "No"}`,
-    `Risk: ${result.riskLevel}`,
-    `Extra hours: ${result.estimatedExtraHours}`,
-    "",
-    "Why:",
-    result.violatedClause,
-    "",
-    "What it means:",
-    result.analysis,
-    "",
-    "What to reply:",
-    result.suggestedEmailResponse,
-    "",
-  ].join("\n");
-}
 
 function CompressLinks() {
   return (
@@ -58,7 +56,22 @@ export default function Analyzer() {
   const [error, setError] = useState<ReactNode>("");
   const [copied, setCopied] = useState(false);
   const [showCue, setShowCue] = useState(false);
+  const [tone, setTone] = useState<ReplyTone>("formal");
+  const [stageIndex, setStageIndex] = useState(0);
+  const [pdfBusy, setPdfBusy] = useState(false);
   const resultRef = useRef<HTMLElement | null>(null);
+
+  // Cycle staged messages while waiting on the model.
+  useEffect(() => {
+    if (!loading) {
+      setStageIndex(0);
+      return;
+    }
+    const timer = window.setInterval(() => {
+      setStageIndex((index) => (index + 1) % stages.length);
+    }, 2600);
+    return () => window.clearInterval(timer);
+  }, [loading]);
 
   const scrollToResult = () => {
     setShowCue(false);
@@ -118,12 +131,31 @@ export default function Analyzer() {
     if (file) formData.append("contractFile", file);
     formData.append("contractText", contractText);
     formData.append("clientRequest", clientRequest);
+    formData.append("tone", tone);
+    formData.append("userId", getOrCreateUserId());
 
     try {
       const response = await fetch("/api/analyze", { method: "POST", body: formData });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Analysis failed.");
-      setResult(data as AnalysisResult);
+      const analysis = data as AnalysisResult;
+      setResult(analysis);
+      // Full history lives in the browser (free, private). DDB keeps only
+      // the compact audit log written server-side.
+      saveHistoryRecord({
+        id: typeof crypto !== "undefined" && "randomUUID" in crypto
+          ? crypto.randomUUID()
+          : `h-${Date.now()}`,
+        timestamp: new Date().toISOString(),
+        tone,
+        clientRequest,
+        isScopeCreep: analysis.isScopeCreep,
+        riskLevel: analysis.riskLevel,
+        violatedClause: analysis.violatedClause,
+        analysis: analysis.analysis,
+        estimatedExtraHours: analysis.estimatedExtraHours,
+        suggestedEmailResponse: analysis.suggestedEmailResponse,
+      });
       // Nudge the eye downward: auto-scroll + floating cue to the answer.
       setShowCue(true);
       window.setTimeout(() => resultRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 120);
@@ -142,21 +174,16 @@ export default function Analyzer() {
     window.setTimeout(() => setCopied(false), 1800);
   };
 
-  const downloadSummary = () => {
-    if (!result) return;
-
-    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-    const filename = `Extra_Work_Answer_${timestamp}.txt`;
-    const summary = buildSummaryText(result, timestamp);
-    const blob = new Blob([summary], { type: "text/plain;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = filename;
-    document.body.appendChild(anchor);
-    anchor.click();
-    anchor.remove();
-    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  const downloadPdf = async () => {
+    if (!result || pdfBusy) return;
+    setPdfBusy(true);
+    try {
+      await downloadAnalysisPdf(result, clientRequest);
+    } catch {
+      setError("Could not build the PDF. Try again.");
+    } finally {
+      setPdfBusy(false);
+    }
   };
 
   const resultSummary = useMemo(() => {
@@ -211,10 +238,10 @@ export default function Analyzer() {
           </div>
           <label className={`group flex min-h-28 cursor-pointer flex-col items-center justify-center border border-dashed px-5 text-center transition ${file ? "border-[var(--teal)] bg-[#eef8f4]" : "border-[var(--line)] bg-[var(--paper)] hover:border-[var(--coral)]"}`}>
             {file ? <CheckCircle2 className="mb-2 text-[var(--teal)]" size={22} /> : <Upload className="mb-2 text-[var(--coral)]" size={22} />}
-            <span className="text-sm font-bold">{file ? file.name : "Upload your agreement (PDF)"}</span>
-            <span className="mt-1 text-xs text-[var(--muted)]">{file ? "PDF ready to check" : "PDF up to 10 MB"}</span>
+            <span className="text-sm font-bold">{file ? file.name : "Upload your agreement (PDF or DOCX)"}</span>
+            <span className="mt-1 text-xs text-[var(--muted)]">{file ? "File ready to check" : "PDF or Word, up to 10 MB"}</span>
             <span className="mt-1 flex items-center gap-1 text-[11px] font-semibold text-[var(--teal)]"><Timer size={12} /> Gone in 24 hours, automatically</span>
-            <input type="file" accept="application/pdf,.pdf" onChange={handleFile} className="sr-only" />
+            <input type="file" accept="application/pdf,.pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,.docx" onChange={handleFile} className="sr-only" />
           </label>
           {file && (
             <button type="button" onClick={() => setFile(null)} className="mt-2 flex items-center gap-1 text-xs text-[var(--muted)] hover:text-[var(--coral)]">
@@ -263,15 +290,36 @@ export default function Analyzer() {
             <span className={hasRequest ? "font-semibold text-[#78d2c4]" : "text-white/50"}>{hasRequest ? "Request ready" : "Waiting for the new request"}</span>
             <span className="text-white/50">{clientRequest.length} characters</span>
           </div>
+          <div className="mt-5">
+            <div className="mb-2 text-[10px] font-bold uppercase tracking-[0.18em] text-white/50">Reply tone</div>
+            <div className="grid grid-cols-3 gap-1 border border-white/20 bg-white/5 p-1" role="group" aria-label="Reply tone">
+              {tones.map((option) => (
+                <button
+                  key={option.value}
+                  type="button"
+                  onClick={() => setTone(option.value)}
+                  aria-pressed={tone === option.value}
+                  title={option.hint}
+                  className={`px-2 py-2 font-display text-xs font-bold transition ${
+                    tone === option.value
+                      ? "bg-[var(--coral)] text-white"
+                      : "text-white/60 hover:text-white"
+                  }`}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+          </div>
           <button
             type="button"
             onClick={handleAnalyze}
             disabled={!canAnalyze}
-            className="mt-5 flex items-center justify-center gap-2 bg-[var(--coral)] px-5 py-4 font-display text-sm font-bold text-white transition hover:bg-[#a94439] disabled:cursor-not-allowed disabled:opacity-45"
+            className="mt-4 flex items-center justify-center gap-2 bg-[var(--coral)] px-5 py-4 font-display text-sm font-bold text-white transition hover:bg-[#a94439] disabled:cursor-not-allowed disabled:opacity-45"
           >
             {loading ? (
               <>
-                <LoaderCircle className="animate-spin" size={18} /> Reading the fine print...
+                <LoaderCircle className="animate-spin" size={18} /> {stages[stageIndex]}
               </>
             ) : (
               <>
@@ -289,6 +337,30 @@ export default function Analyzer() {
         <div role="alert" aria-live="assertive" className="sg-error mt-5 border border-[#e2a29a] bg-[#fff3f0] px-4 py-3 text-sm leading-6 text-[#a64035]">
           {error}
         </div>
+      )}
+
+      {loading && !result && (
+        <section aria-hidden="true" className="sg-card mt-8 border border-[var(--line)] bg-white/70 p-6 md:p-8">
+          <div className="flex flex-col gap-5 border-b border-[var(--line)] pb-6 md:flex-row md:items-center md:justify-between">
+            <div className="flex items-center gap-4">
+              <div className="sg-shimmer h-10 w-10 rounded-full" />
+              <div>
+                <div className="sg-shimmer h-3 w-24" />
+                <div className="sg-shimmer mt-2 h-7 w-44" />
+              </div>
+            </div>
+            <div className="flex items-center gap-8">
+              <div className="sg-shimmer h-12 w-24" />
+              <div className="sg-shimmer h-12 w-20" />
+            </div>
+          </div>
+          <div className="mt-7 grid gap-5 md:grid-cols-2">
+            <div className="sg-shimmer h-28" />
+            <div className="sg-shimmer h-28" />
+          </div>
+          <div className="sg-shimmer mt-7 h-40" />
+          <p className="mt-4 text-xs font-semibold text-[var(--muted)]">{stages[stageIndex]}</p>
+        </section>
       )}
 
       {result && resultSummary && (
@@ -329,8 +401,8 @@ export default function Analyzer() {
             <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
               <h3 className="text-xs font-bold uppercase tracking-[0.14em] text-[var(--muted)]">What to reply</h3>
               <div className="flex items-center gap-3">
-                <button type="button" onClick={downloadSummary} className="flex items-center gap-1 text-xs font-bold text-[var(--teal)] hover:text-[var(--coral)]">
-                  <Download size={14} /> Download answer
+                <button type="button" onClick={downloadPdf} disabled={pdfBusy} className="flex items-center gap-1 text-xs font-bold text-[var(--teal)] hover:text-[var(--coral)] disabled:opacity-50">
+                  <FileDown size={14} /> {pdfBusy ? "Building PDF…" : "Download PDF"}
                 </button>
                 <button type="button" onClick={copyResponse} className="flex items-center gap-1 text-xs font-bold text-[var(--teal)] hover:text-[var(--coral)]">
                   {copied ? <Check size={14} /> : <Clipboard size={14} />} {copied ? "Copied!" : "Copy reply"}

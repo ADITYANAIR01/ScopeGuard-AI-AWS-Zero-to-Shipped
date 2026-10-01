@@ -2,6 +2,7 @@ import { ConverseCommand } from "@aws-sdk/client-bedrock-runtime";
 import { PutItemCommand } from "@aws-sdk/client-dynamodb";
 import { PutObjectCommand } from "@aws-sdk/client-s3";
 import { marshall } from "@aws-sdk/util-dynamodb";
+import mammoth from "mammoth";
 import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { extractText } from "unpdf";
@@ -24,6 +25,26 @@ type AnalysisResult = {
   estimatedExtraHours: number;
   suggestedEmailResponse: string;
 };
+
+type ReplyTone = "firm" | "friendly" | "formal";
+
+const TONE_INSTRUCTIONS: Record<ReplyTone, string> = {
+  firm: "Write suggestedEmailResponse in a firm, direct tone. Be clear about boundaries and additional costs without sounding hostile.",
+  friendly: "Write suggestedEmailResponse in a warm but straightforward tone. Be courteous, then clearly state what is extra work.",
+  formal: "Write suggestedEmailResponse in a clear, businesslike tone. Reference the agreement terms precisely without legalistic or inflated language.",
+};
+
+function parseTone(value: unknown): ReplyTone {
+  if (value === "firm" || value === "friendly" || value === "formal") return value;
+  return "formal";
+}
+
+function parseUserId(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!/^[A-Za-z0-9-]{8,64}$/.test(trimmed)) return null;
+  return trimmed;
+}
 
 function normalizeResult(value: unknown): AnalysisResult {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -84,6 +105,8 @@ export async function POST(request: NextRequest) {
     const clientRequestValue = formData.get("clientRequest");
     const rawContractText = typeof rawContractValue === "string" ? rawContractValue.trim() : "";
     const clientRequest = typeof clientRequestValue === "string" ? clientRequestValue.trim() : "";
+    const tone = parseTone(formData.get("tone"));
+    const userId = parseUserId(formData.get("userId"));
 
     if (!clientRequest) return jsonError("Client request is required.", 400);
     if (clientRequest.length > MAX_REQUEST_CHARS) return jsonError("Client request is too long.", 400);
@@ -91,33 +114,47 @@ export async function POST(request: NextRequest) {
     let extractedContractText = rawContractText;
     let uploadedKey: string | undefined;
     let uploadedBuffer: Buffer | undefined;
+    let uploadedContentType = "application/pdf";
 
     if (file instanceof File && file.size > 0) {
       if (file.size > MAX_FILE_SIZE) return jsonError("That file is too big — try under 10 MB.", 400);
-      if (file.type !== "application/pdf" && !file.name.toLowerCase().endsWith(".pdf")) {
-        return jsonError("Only PDF contracts are supported.", 400);
+      const lowerName = file.name.toLowerCase();
+      const isPdf = file.type === "application/pdf" || lowerName.endsWith(".pdf");
+      const isDocx =
+        file.type === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
+        lowerName.endsWith(".docx");
+      if (!isPdf && !isDocx) {
+        return jsonError("Only PDF or DOCX contracts are supported.", 400);
       }
 
       const buffer = Buffer.from(await file.arrayBuffer());
       uploadedBuffer = buffer;
+      uploadedContentType = isDocx
+        ? "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        : "application/pdf";
       uploadedKey = `contracts/${Date.now()}-${file.name.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
 
-      let extractedPdfText = "";
+      let extractedFileText = "";
       try {
-        const { text } = await extractText(new Uint8Array(buffer), { mergePages: true });
-        extractedPdfText = (Array.isArray(text) ? text.join("\n") : text || "").trim();
-      } catch (pdfError) {
-        console.warn("PDF extraction failed, falling back to pasted contract text when available.", pdfError);
-        extractedPdfText = "";
+        if (isDocx) {
+          const { value } = await mammoth.extractRawText({ buffer });
+          extractedFileText = (value || "").trim();
+        } else {
+          const { text } = await extractText(new Uint8Array(buffer), { mergePages: true });
+          extractedFileText = (Array.isArray(text) ? text.join("\n") : text || "").trim();
+        }
+      } catch (extractError) {
+        console.warn("Contract extraction failed, falling back to pasted contract text when available.", extractError);
+        extractedFileText = "";
       }
 
-      extractedContractText = extractedPdfText;
+      extractedContractText = extractedFileText;
       if (!extractedContractText && rawContractText) {
         extractedContractText = rawContractText;
       }
 
       if (!extractedContractText) {
-        return jsonError("Unable to extract contract text from the uploaded PDF. Paste the text or upload a readable PDF.", 400);
+        return jsonError("Unable to extract contract text from the uploaded file. Paste the text or upload a readable PDF or DOCX.", 400);
       }
     }
 
@@ -131,11 +168,19 @@ export async function POST(request: NextRequest) {
         Bucket: process.env.S3_BUCKET_NAME || "scopeguard-contracts-assets",
         Key: uploadedKey,
         Body: uploadedBuffer,
-        ContentType: "application/pdf",
+        ContentType: uploadedContentType,
       }));
     }
 
-    const systemPrompt = `You are ScopeGuard AI, a contract compliance analyst. Compare a Statement of Work against an incoming client request. Use non-thinking mode. Return only valid JSON, with no markdown, no thinking trace, using exactly this schema: {"isScopeCreep": boolean, "riskLevel": "LOW" | "MEDIUM" | "HIGH", "violatedClause": string, "analysis": string, "estimatedExtraHours": number, "suggestedEmailResponse": string}. Cite the relevant SOW language in violatedClause when scope has changed. Be conservative: missing detail is not proof of scope creep.`;
+    const systemPrompt = `You are ScopeGuard AI, a contract compliance analyst. Compare a Statement of Work against an incoming client request. Use non-thinking mode. Return only valid JSON, with no markdown, no thinking trace, using exactly this schema: {"isScopeCreep": boolean, "riskLevel": "LOW" | "MEDIUM" | "HIGH", "violatedClause": string, "analysis": string, "estimatedExtraHours": number, "suggestedEmailResponse": string}.
+
+  Use plain language that a freelancer can understand quickly. Be specific and concise:
+  - violatedClause: quote or closely paraphrase only the relevant agreement language, in 1-3 sentences.
+  - analysis: explain the decision in 2-4 short sentences. Name each requested change that affects scope, but do not restate the whole request.
+  - estimatedExtraHours: give a rough, honest estimate. Do not imply false precision.
+  - suggestedEmailResponse: write a ready-to-send reply in 3-5 short sentences. State what is outside the current agreement and suggest the next step. You may mention meetings, timelines, budgets, or project history when they are stated in the agreement or incoming request, but do not invent or assume them. Avoid exclamation marks, sales language, corporate jargon, and phrases such as "meaningful architectural extensions", "whatever best supports", or "get something on the books".
+
+  Be conservative: missing detail is not proof of scope creep. Cite the relevant SOW language in violatedClause when scope has changed. ${TONE_INSTRUCTIONS[tone]}`;
     const userMessage = `STATEMENT OF WORK:\n${extractedContractText}\n\nINCOMING CLIENT REQUEST:\n${clientRequest}`;
 
     const response = await bedrockClient.send(new ConverseCommand({
@@ -157,6 +202,11 @@ export async function POST(request: NextRequest) {
       Item: marshall({
         LogId: logId,
         Timestamp: new Date().toISOString(),
+        // Anonymous per-browser owner. History reads filter on this so a
+        // user only ever sees their own logs. Logs without UserId (legacy)
+        // are never returned by /api/history.
+        UserId: userId || "anonymous",
+        Tone: tone,
         IsScopeCreep: result.isScopeCreep,
         RiskLevel: result.riskLevel,
         ClientRequest: clientRequest.slice(0, 500),

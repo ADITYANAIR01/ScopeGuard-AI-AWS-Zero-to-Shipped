@@ -60,6 +60,18 @@ a:focus-visible, button:focus-visible {
 }
 .animate-cue { animation: cue-bob 1.6s ease-in-out infinite; }
 
+/* Skeleton shimmer shown while the model thinks */
+@keyframes sg-shimmer {
+  0% { opacity: 0.45; }
+  50% { opacity: 1; }
+  100% { opacity: 0.45; }
+}
+.sg-shimmer {
+  border-radius: 4px;
+  background-color: var(--line);
+  animation: sg-shimmer 1.4s ease-in-out infinite;
+}
+
 /* ---------- Dark mode (toggled via <html data-theme="dark">) ---------- */
 [data-theme="dark"] {
   --ink: #ece5d8;
