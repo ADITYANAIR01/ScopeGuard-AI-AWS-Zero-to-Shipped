@@ -19,6 +19,13 @@ Use the following description when an AI assistant needs context about this repo
 
 The analyzer also includes a sample case so the workflow can be tested without a real contract.
 
+## Services 
+Amazon Bedrock 
+Amazon S3
+Amazon DynamoDB
+Nodejs 
+git
+
 ## Architecture
 
 ```mermaid
